@@ -1,0 +1,319 @@
+{
+  "name": "Only Ingestion Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "projectId": {
+          "__rl": true,
+          "value": "n8ndatatestproject",
+          "mode": "list",
+          "cachedResultName": "n8nDataTestProject",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=n8ndatatestproject"
+        },
+        "sqlQuery": "CREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_bronze`;\nCREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_silver`;\nCREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_gold`;\nCREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_lib`;\n\nCREATE TABLE IF NOT EXISTS `n8ndatatestproject.mkt_silver.fact_mkt_daily` (\n  date DATE,\n  platform STRING,\n  account STRING,\n  campaign STRING,\n  country STRING,\n  device STRING,\n  spend FLOAT64,\n  clicks INT64,\n  impressions INT64,\n  conversions INT64,\n  load_date TIMESTAMP,\n  source_file_name STRING\n)\nPARTITION BY date\nCLUSTER BY platform, country;\n\n-- staging bronze\nCREATE TABLE IF NOT EXISTS `n8ndatatestproject.mkt_bronze.mkt_daily_raw` (\n  date DATE,\n  platform STRING,\n  account STRING,\n  campaign STRING,\n  country STRING,\n  device STRING,\n  spend FLOAT64,\n  clicks INT64,\n  impressions INT64,\n  conversions INT64,\n  load_date TIMESTAMP,\n  source_file_name STRING\n);\n\nTRUNCATE TABLE `n8ndatatestproject.mkt_bronze.mkt_daily_raw`;\n\nLOAD DATA INTO `n8ndatatestproject.mkt_bronze.mkt_daily_raw`\nFROM FILES (\n  format = 'CSV',\n  uris = ['gs://n8n-datatest/{{$node[\"Hash_Md5\"].json.objectName}}'],\n  field_delimiter = ',',\n  skip_leading_rows = 1\n);\n\n-- Duplicate lines treatment: MERGE staging (bronze) -> silver\nMERGE `n8ndatatestproject.mkt_silver.fact_mkt_daily` T\nUSING (\n  SELECT\n    date, platform, account, campaign, country, device,\n    -- SUM same key/day metrics (mesma lógica sua)\n    SUM(spend)       AS spend,\n    SUM(clicks)      AS clicks,\n    SUM(impressions) AS impressions,\n    SUM(conversions) AS conversions,\n    -- recent metadata\n    MAX(load_date) AS load_date,\n    ARRAY_AGG(source_file_name ORDER BY load_date DESC LIMIT 1)[OFFSET(0)] AS source_file_name\n  FROM `n8ndatatestproject.mkt_bronze.mkt_daily_raw`\n  GROUP BY date, platform, account, campaign, country, device\n) S\nON  T.date=S.date\nAND T.platform=S.platform\nAND T.account=S.account\nAND T.campaign=S.campaign\nAND T.country=S.country\nAND T.device=S.device\nWHEN MATCHED THEN UPDATE SET\n  spend=S.spend,\n  clicks=S.clicks,\n  impressions=S.impressions,\n  conversions=S.conversions,\n  load_date=S.load_date,\n  source_file_name=S.source_file_name\nWHEN NOT MATCHED THEN INSERT ROW;\n\n-- Clean staging table\nTRUNCATE TABLE `n8ndatatestproject.mkt_bronze.mkt_daily_raw`;\n\n-- return / sanity check\nSELECT COUNT(*) AS rows_total, MIN(date) AS min_date, MAX(date) AS max_date\nFROM `n8ndatatestproject.mkt_silver.fact_mkt_daily`;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        1872,
+        512
+      ],
+      "id": "364d0964-1c99-4157-ac63-5bb1537b3af8",
+      "name": "ELT"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1XYtQ58FcOLTZa8O3UAV6BLs1UDRBWhMiM7g7mU3wpD0",
+          "mode": "list",
+          "cachedResultName": "ads_spend",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XYtQ58FcOLTZa8O3UAV6BLs1UDRBWhMiM7g7mU3wpD0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 684824637,
+          "mode": "list",
+          "cachedResultName": "ads_spend",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XYtQ58FcOLTZa8O3UAV6BLs1UDRBWhMiM7g7mU3wpD0/edit#gid=684824637"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1104,
+        624
+      ],
+      "id": "5c76cfd6-6434-47d0-85cd-5f3a2ad906aa",
+      "name": "Dataset"
+    },
+    {
+      "parameters": {
+        "content": "## KPI INGESTION WORKFLOW",
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        672,
+        544
+      ],
+      "typeVersion": 1,
+      "id": "d948a778-6b3c-481d-ab49-7f917d2602b5",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\n// Fields order by \nconst FIELDS = ['date','platform','account','campaign','country','device','spend','clicks','impressions','conversions'];\n\n\nconst rows = items\n  .map(i => i.json)\n  .sort((a,b) => (a.row_number||0) - (b.row_number||0));\n\n//Vector normalizer\nfunction norm(rec){\n  const out = {};\n  out.date = String(rec.date).slice(0,10); // YYYY-MM-DD\n  out.platform = String(rec.platform||'').trim();\n  out.account  = String(rec.account||'').trim();\n  out.campaign = String(rec.campaign||'').trim();\n  out.country  = String(rec.country||'').trim();\n  out.device   = String(rec.device||'').trim();\n\n  const toNum = v => (v===null||v===undefined||v==='') ? null : Number(v);\n  out.spend       = toNum(rec.spend);\n  out.clicks      = rec.clicks===null||rec.clicks===undefined||rec.clicks==='' ? null : parseInt(rec.clicks,10);\n  out.impressions = rec.impressions===null||rec.impressions===undefined||rec.impressions==='' ? null : parseInt(rec.impressions,10);\n  out.conversions = rec.conversions===null||rec.conversions===undefined||rec.conversions==='' ? null : parseInt(rec.conversions,10);\n  return out;\n}\n\n// 3) Safe CSV\nfunction csvEscape(v){\n  if (v===null || v===undefined) return '';\n  const s = String(v);\n  return /[\",\\n]/.test(s) ? `\"${s.replace(/\"/g,'\"\"')}\"` : s;\n}\n\n// Building CSV to load job in Bquery\nconst header = FIELDS.join(',');\nconst lines = [header];\nfor (const rec of rows.map(norm)) {\n  const line = FIELDS.map(k => csvEscape(rec[k])).join(',');\n  lines.push(line);\n}\nconst csv = lines.join('\\n');\n\n// MD5 process\nconst md5 = crypto.createHash('md5').update(csv).digest('hex');\n\n//base64 + metadata\nconst base64 = Buffer.from(csv, 'utf8').toString('base64');\nconst today = new Date();\nconst yyyy = today.getUTCFullYear();\nconst mm = String(today.getUTCMonth()+1).padStart(2,'0');\nconst dd = String(today.getUTCDate()).padStart(2,'0');\nconst ymd = `${yyyy}-${mm}-${dd}`;\n\nconst objectName = `ads_spend/dt=${ymd}/ads_spend_${md5}.csv`;\nconst gcsUri = `gs://n8n-datatest/${objectName}`;\n\nreturn [{\n  json: {\n    fileHash: md5,\n    objectName,\n    gcsUri,\n    source_file_name: gcsUri\n  },\n  binary: {\n    data: {\n      data: base64,\n      fileName: `ads_spend_${md5}.csv`,\n      mimeType: 'text/csv'\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        624
+      ],
+      "id": "0c163cab-f053-4ee7-acb5-513b384f4103",
+      "name": "Hash_Md5"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \n\"rows_loaded\":\"{{ $json.rows_total }}\",\n\"min_date\":\"{{ $json.min_date }}\",\n\"max_date\":\"{{ $json.max_date }}\"\n}",
+        "options": {
+          "responseCode": "={{ $json.rows_total ? 200 : 204 }}"
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2080,
+        608
+      ],
+      "id": "c9232763-0fa5-4033-b024-f386af4dd6e3",
+      "name": "Ingestion_Response"
+    },
+    {
+      "parameters": {
+        "resource": "object",
+        "operation": "create",
+        "bucketName": "n8n-datatest",
+        "objectName": "={{$node[\"Hash_Md5\"].json.objectName}}",
+        "createData": {
+          "contentType": "text/csv"
+        },
+        "createQuery": {
+          "ifGenerationMatch": 0
+        },
+        "encryptionHeaders": {},
+        "requestOptions": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.googleCloudStorage",
+      "typeVersion": 1,
+      "position": [
+        1504,
+        560
+      ],
+      "id": "9fcf7f61-72b6-43cc-8ad4-e1e7dca628ab",
+      "name": "GCS_BronzeLayer",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        928,
+        400
+      ],
+      "id": "c120a68d-c9b5-4532-a4fe-382529ad4062",
+      "name": "N8n_Manual_Ingestion"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingestion",
+        "authentication": "basicAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        784
+      ],
+      "id": "c346033d-2375-4c48-ba79-ee382fd0e51e",
+      "name": "Post_Ingestion_Hook",
+      "webhookId": "4d0e5dcb-21d5-477e-b46f-b4556c2f2d37"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6fdc42c4-f581-419b-8233-69c861e3758c",
+              "leftValue": "={{$node[\"GCS_BronzeLayer\"].json[\"statusCode\"]}}",
+              "rightValue": "412",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "4e2566b9-0d1c-4da5-93cb-11d3bebe04b6",
+              "leftValue": "={{$node[\"GCS_BronzeLayer\"].json[\"statusCode\"]}}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "notExists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {
+          "ignoreCase": false
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1696,
+        672
+      ],
+      "id": "1bd8ea5b-15ad-45e4-9eb3-d9481d8cd10a",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "errorMessage": "An Error ocurred in the GLC process."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1904,
+        736
+      ],
+      "id": "af46f446-190e-4bdc-b490-2927aaf3faaf",
+      "name": "Stop and Error"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "ELT": {
+      "main": [
+        [
+          {
+            "node": "Ingestion_Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dataset": {
+      "main": [
+        [
+          {
+            "node": "Hash_Md5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash_Md5": {
+      "main": [
+        [
+          {
+            "node": "GCS_BronzeLayer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GCS_BronzeLayer": {
+      "main": [
+        [
+          {
+            "node": "ELT",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N8n_Manual_Ingestion": {
+      "main": [
+        [
+          {
+            "node": "Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post_Ingestion_Hook": {
+      "main": [
+        [
+          {
+            "node": "Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "ELT",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "",
+  "meta": {
+    "instanceId": "a3d390bf24f9ab8ff653124441e006a4760b1e2e0d6e85244fe9d7b41f439d41"
+  },
+  "tags": []
+}
