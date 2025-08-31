@@ -388,7 +388,7 @@
           "cachedResultName": "n8nDataTestProject",
           "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=n8ndatatestproject"
         },
-        "sqlQuery": "SELECT * FROM n8ndatatestproject.n8ndatatestproject.mkt_lib.fn_kpi_window(@startDate, @endDate);",
+        "sqlQuery": "SELECT * FROM n8ndatatestproject.mkt_lib.fn_kpi_window(@startDate, @endDate);",
         "options": {
           "useLegacySql": false,
           "queryParameters": {
@@ -478,7 +478,7 @@
           "cachedResultName": "n8nDataTestProject",
           "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=n8ndatatestproject"
         },
-        "sqlQuery": "SELECT * FROM n8ndatatestproject.n8ndatatestproject.mkt_lib.fn_kpi_window(@startDate, @endDate);",
+        "sqlQuery": "SELECT * FROM n8ndatatestproject.mkt_lib.fn_kpi_window(@startDate, @endDate);",
         "options": {
           "queryParameters": {
             "namedParameters": [
@@ -940,7 +940,7 @@
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "550f76d3-0995-41cc-a9c5-1fc3bd88da55",
+  "versionId": "7f86ed59-1c15-403b-9412-df10be60c86e",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "a3d390bf24f9ab8ff653124441e006a4760b1e2e0d6e85244fe9d7b41f439d41"
