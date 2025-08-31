@@ -1,0 +1,950 @@
+{
+  "name": "dataEngTest",
+  "nodes": [
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "projectId": {
+          "__rl": true,
+          "value": "n8ndatatestproject",
+          "mode": "list",
+          "cachedResultName": "n8nDataTestProject",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=n8ndatatestproject"
+        },
+        "sqlQuery": "CREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_bronze`;\nCREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_silver`;\nCREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_gold`;\nCREATE SCHEMA IF NOT EXISTS `n8ndatatestproject.mkt_lib`;\n\nCREATE TABLE IF NOT EXISTS `n8ndatatestproject.mkt_silver.fact_mkt_daily` (\n  date DATE,\n  platform STRING,\n  account STRING,\n  campaign STRING,\n  country STRING,\n  device STRING,\n  spend FLOAT64,\n  clicks INT64,\n  impressions INT64,\n  conversions INT64,\n  load_date TIMESTAMP,\n  source_file_name STRING\n)\nPARTITION BY date\nCLUSTER BY platform, country;\n\n-- staging bronze\nCREATE TABLE IF NOT EXISTS `n8ndatatestproject.mkt_bronze.mkt_daily_raw` (\n  date DATE,\n  platform STRING,\n  account STRING,\n  campaign STRING,\n  country STRING,\n  device STRING,\n  spend FLOAT64,\n  clicks INT64,\n  impressions INT64,\n  conversions INT64,\n  load_date TIMESTAMP,\n  source_file_name STRING\n);\n\nTRUNCATE TABLE `n8ndatatestproject.mkt_bronze.mkt_daily_raw`;\n\nLOAD DATA INTO `n8ndatatestproject.mkt_bronze.mkt_daily_raw`\nFROM FILES (\n  format = 'CSV',\n  uris = ['gs://n8n-datatest/{{$node[\"Hash_Md5\"].json.objectName}}'],\n  field_delimiter = ',',\n  skip_leading_rows = 1\n);\n\n-- Duplicate lines treatment: MERGE staging (bronze) -> silver\nMERGE `n8ndatatestproject.mkt_silver.fact_mkt_daily` T\nUSING (\n  SELECT\n    date, platform, account, campaign, country, device,\n    -- SUM same key/day metrics (mesma lógica sua)\n    SUM(spend)       AS spend,\n    SUM(clicks)      AS clicks,\n    SUM(impressions) AS impressions,\n    SUM(conversions) AS conversions,\n    -- recent metadata\n    MAX(load_date) AS load_date,\n    ARRAY_AGG(source_file_name ORDER BY load_date DESC LIMIT 1)[OFFSET(0)] AS source_file_name\n  FROM `n8ndatatestproject.mkt_bronze.mkt_daily_raw`\n  GROUP BY date, platform, account, campaign, country, device\n) S\nON  T.date=S.date\nAND T.platform=S.platform\nAND T.account=S.account\nAND T.campaign=S.campaign\nAND T.country=S.country\nAND T.device=S.device\nWHEN MATCHED THEN UPDATE SET\n  spend=S.spend,\n  clicks=S.clicks,\n  impressions=S.impressions,\n  conversions=S.conversions,\n  load_date=S.load_date,\n  source_file_name=S.source_file_name\nWHEN NOT MATCHED THEN INSERT ROW;\n\n-- Clean staging table\nTRUNCATE TABLE `n8ndatatestproject.mkt_bronze.mkt_daily_raw`;\n\n-- return / sanity check\nSELECT COUNT(*) AS rows_total, MIN(date) AS min_date, MAX(date) AS max_date\nFROM `n8ndatatestproject.mkt_silver.fact_mkt_daily`;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        352,
+        -64
+      ],
+      "id": "81c33142-de3d-4df3-8056-fdfd8faeb088",
+      "name": "ELT",
+      "credentials": {
+        "googleApi": {
+          "id": "drpXj5yLYKUZxPe8",
+          "name": "Google BigQuery account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=={{ $json.body?.question ?? $json.question ?? '' }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Extract structured parameters for KPIs. Respond only with JSON that validates in the connected schema. Today is {{$now.tz(‘America/Sao_Paulo’).format(‘YYYY-MM-DD’)}}. Fill in timeframe.start/end in YYYY-MM-DD. strategy ∈ {explicit,last_n_days,this_month,last_month,yesterday}. If last_n_days, include n. Include metrics.cac/roas (booleans) and filters (or nulls).\n\nWhen the question says last N days vs prior, n must be N (size of the current window, not current+previous).\nDo not wrap the result in any extra keys (e.g., no output). Return only the object that validates in the schema."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        32,
+        944
+      ],
+      "id": "648404cf-e032-4df7-a87a-0d2d4cd1c7b3",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {
+          "maxTokens": 256,
+          "responseFormat": "json_object",
+          "temperature": 0,
+          "maxRetries": 2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        32,
+        1136
+      ],
+      "id": "b5c76014-c184-41ea-ac83-d2c8afe0bd2e",
+      "name": "OpenAI Chat Model",
+      "notesInFlow": false,
+      "credentials": {
+        "openAiApi": {
+          "id": "Wty824oKbWw62Bx0",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"definitions\": {\n    \"Params\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"intent\", \"timeframe\", \"metrics\", \"filters\"],\n      \"properties\": {\n        \"intent\": { \"type\": \"string\" },\n        \"metrics\": {\n          \"type\": \"object\",\n          \"additionalProperties\": false,\n          \"required\": [\"cac\", \"roas\"],\n          \"properties\": {\n            \"cac\": { \"type\": \"boolean\" },\n            \"roas\": { \"type\": \"boolean\" }\n          }\n        },\n        \"timeframe\": {\n          \"type\": \"object\",\n          \"additionalProperties\": false,\n          \"required\": [\"strategy\"],\n          \"properties\": {\n            \"strategy\": {\n              \"type\": \"string\",\n              \"enum\": [\"explicit\",\"last_n_days\",\"this_month\",\"last_month\",\"yesterday\"]\n            },\n            \"n\":    { \"type\": \"integer\", \"minimum\": 1, \"maximum\": 365 },\n            \"start\":{ \"type\": \"string\", \"pattern\": \"^\\\\d{4}-\\\\d{2}-\\\\d{2}$\" },\n            \"end\":  { \"type\": \"string\", \"pattern\": \"^\\\\d{4}-\\\\d{2}-\\\\d{2}$\" }\n          },\n          \"allOf\": [\n            { \"if\": { \"properties\": { \"strategy\": { \"const\": \"last_n_days\" } } }, \"then\": { \"required\": [\"n\"] } },\n            { \"if\": { \"properties\": { \"strategy\": { \"const\": \"explicit\" } } },    \"then\": { \"required\": [\"start\",\"end\"] } }\n          ]\n        },\n        \"filters\": {\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"additionalProperties\": false,\n              \"properties\": {\n                \"platform\": { \"type\": [\"string\",\"null\"] },\n                \"country\":  { \"type\": [\"string\",\"null\"], \"pattern\": \"^[A-Z]{2}$\" },\n                \"account\":  { \"type\": [\"string\",\"null\"] },\n                \"campaign\": { \"type\": [\"string\",\"null\"] },\n                \"device\":   { \"type\": [\"string\",\"null\"] }\n              }\n            },\n            { \"type\": \"null\" }\n          ]\n        }\n      }\n    }\n  },\n  \"oneOf\": [\n    { \"$ref\": \"#/definitions/Params\" },\n    {\n      \"type\": \"object\",\n      \"required\": [\"output\"],\n      \"properties\": { \"output\": { \"$ref\": \"#/definitions/Params\" } },\n      \"additionalProperties\": false\n    }\n  ]\n}\n"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        240,
+        1136
+      ],
+      "id": "2080575d-4c6e-46f2-b165-b2506f3e8399",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1XYtQ58FcOLTZa8O3UAV6BLs1UDRBWhMiM7g7mU3wpD0",
+          "mode": "list",
+          "cachedResultName": "ads_spend",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XYtQ58FcOLTZa8O3UAV6BLs1UDRBWhMiM7g7mU3wpD0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 684824637,
+          "mode": "list",
+          "cachedResultName": "ads_spend",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XYtQ58FcOLTZa8O3UAV6BLs1UDRBWhMiM7g7mU3wpD0/edit#gid=684824637"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -416,
+        48
+      ],
+      "id": "60792ee0-2175-4335-8517-2aace552690a",
+      "name": "Dataset",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "XxNEClvnTA3VCv2g",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## AI AGENT WORKFLOW",
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -896,
+        832
+      ],
+      "typeVersion": 1,
+      "id": "23879f2b-8d1b-43ae-810f-d166698d0cd6",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## KPI INGESTION WORKFLOW",
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -848,
+        -32
+      ],
+      "typeVersion": 1,
+      "id": "9d4437f4-4acc-4da6-948c-9c55433248fd",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## API ENDPOINT WORKFLOW",
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -912,
+        448
+      ],
+      "typeVersion": 1,
+      "id": "967b2968-3ab2-4bf0-9e2f-9c2adb5a3abf",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\n// Fields order by \nconst FIELDS = ['date','platform','account','campaign','country','device','spend','clicks','impressions','conversions'];\n\n\nconst rows = items\n  .map(i => i.json)\n  .sort((a,b) => (a.row_number||0) - (b.row_number||0));\n\n//Vector normalizer\nfunction norm(rec){\n  const out = {};\n  out.date = String(rec.date).slice(0,10); // YYYY-MM-DD\n  out.platform = String(rec.platform||'').trim();\n  out.account  = String(rec.account||'').trim();\n  out.campaign = String(rec.campaign||'').trim();\n  out.country  = String(rec.country||'').trim();\n  out.device   = String(rec.device||'').trim();\n\n  const toNum = v => (v===null||v===undefined||v==='') ? null : Number(v);\n  out.spend       = toNum(rec.spend);\n  out.clicks      = rec.clicks===null||rec.clicks===undefined||rec.clicks==='' ? null : parseInt(rec.clicks,10);\n  out.impressions = rec.impressions===null||rec.impressions===undefined||rec.impressions==='' ? null : parseInt(rec.impressions,10);\n  out.conversions = rec.conversions===null||rec.conversions===undefined||rec.conversions==='' ? null : parseInt(rec.conversions,10);\n  return out;\n}\n\n// 3) Safe CSV\nfunction csvEscape(v){\n  if (v===null || v===undefined) return '';\n  const s = String(v);\n  return /[\",\\n]/.test(s) ? `\"${s.replace(/\"/g,'\"\"')}\"` : s;\n}\n\n// Building CSV to load job in Bquery\nconst header = FIELDS.join(',');\nconst lines = [header];\nfor (const rec of rows.map(norm)) {\n  const line = FIELDS.map(k => csvEscape(rec[k])).join(',');\n  lines.push(line);\n}\nconst csv = lines.join('\\n');\n\n// MD5 process\nconst md5 = crypto.createHash('md5').update(csv).digest('hex');\n\n//base64 + metadata\nconst base64 = Buffer.from(csv, 'utf8').toString('base64');\nconst today = new Date();\nconst yyyy = today.getUTCFullYear();\nconst mm = String(today.getUTCMonth()+1).padStart(2,'0');\nconst dd = String(today.getUTCDate()).padStart(2,'0');\nconst ymd = `${yyyy}-${mm}-${dd}`;\n\nconst objectName = `ads_spend/dt=${ymd}/ads_spend_${md5}.csv`;\nconst gcsUri = `gs://n8n-datatest/${objectName}`;\n\nreturn [{\n  json: {\n    fileHash: md5,\n    objectName,\n    gcsUri,\n    source_file_name: gcsUri\n  },\n  binary: {\n    data: {\n      data: base64,\n      fileName: `ads_spend_${md5}.csv`,\n      mimeType: 'text/csv'\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        48
+      ],
+      "id": "1b24ecf7-3e21-4c0e-8c21-ac90eb0f4130",
+      "name": "Hash_Md5"
+    },
+    {
+      "parameters": {
+        "jsCode": "const qry = $json.query || new Date();\nconst end = qry.end ? new Date(qry.end) : new Date()\nconst start = qry.start ? new Date(qry.start) : new Date(end.getTime() - 30*24*3600*1000);\n\nfunction iso(d){ return new Date(d).toISOString().slice(0,10); }\nif (isNaN(start) || isNaN(end) || start > end) {\n  return [{ json: { error: 'Invalid parameters: uses ?start=YYYY-MM-DD&end=YYYY-MM-DD and start <= end.' , httpCode: 400 }, pairedItem: { item: 0 } }];\n}\n\nreturn [{ json: { start: iso(start), end: iso(end), httpCode: 200 } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -368,
+        528
+      ],
+      "id": "2f33870f-66be-4a7b-bae0-67a05cfe50e5",
+      "name": "Header_Validate"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \n\"rows_loaded\":\"{{ $json.rows_total }}\",\n\"min_date\":\"{{ $json.min_date }}\",\n\"max_date\":\"{{ $json.max_date }}\"\n}",
+        "options": {
+          "responseCode": "={{ $json.rows_total ? 200 : 204 }}"
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        560,
+        32
+      ],
+      "id": "80859cd7-4a6c-4833-b74d-75b4aa402a36",
+      "name": "Ingestion_Response"
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- Configuration Constants ---\n\n// Defines a conservative payload limit. 1 MiB is sufficient for this API and prevents abuse.\nconst PAYLOAD_LIMIT_MIB = 1;\nconst PAYLOAD_LIMIT_BYTES = PAYLOAD_LIMIT_MIB * 1024 * 1024;\n\n// Defines the required Content-Type for the request.\nconst SUPPORTED_CONTENT_TYPE_REGEX = /^application\\/json\\b/;\n\n// Defines standardized reasons for validation failure.\nconst REASON_UNSUPPORTED_TYPE = 'unsupported_media_type';\nconst REASON_PAYLOAD_TOO_LARGE = 'payload_too_large';\n\n\n// --- Validation Logic ---\n\nconst headers = $json.headers || {};\nconst receivedContentType = (headers['content-type'] || headers['Content-Type'] || '').toLowerCase();\n\n// 1. Check if the content type is supported.\nconst isContentTypeSupported = SUPPORTED_CONTENT_TYPE_REGEX.test(receivedContentType);\n\n// 2. Calculate the payload size in bytes.\n// It prioritizes the 'Content-Length' header for efficiency, falling back to serialization.\nconst contentLengthHeader = headers['content-length'] || headers['Content-Length'];\nlet payloadSizeBytes = 0;\nif (contentLengthHeader && !isNaN(Number(contentLengthHeader))) {\n  payloadSizeBytes = Number(contentLengthHeader);\n} else {\n  // The Webhook node might place the body in '$json.body' or at the root '$json'.\n  const requestBody = $json.body ?? $json;\n  try {\n    payloadSizeBytes = Buffer.byteLength(JSON.stringify(requestBody), 'utf8');\n  } catch {\n    // On serialization failure, size is 0, which the final validation will handle.\n    payloadSizeBytes = 0;\n  }\n}\n\n// 3. Determine the final validation status and reason for failure.\nconst isWithinSizeLimit = payloadSizeBytes <= PAYLOAD_LIMIT_BYTES;\nconst isValid = isContentTypeSupported && isWithinSizeLimit;\nconst failureReason = !isContentTypeSupported\n  ? REASON_UNSUPPORTED_TYPE\n  : (!isWithinSizeLimit ? REASON_PAYLOAD_TOO_LARGE : null);\n\n\n// --- Output ---\n\n// Export the validation results and pass the original body to subsequent nodes.\nreturn [\n  {\n    json: {\n      validation: {\n        isValid,\n        payloadSizeBytes,\n        limitBytes: PAYLOAD_LIMIT_BYTES,\n        reason: failureReason,\n      },\n      raw_question: $json.body?.question ?? $json.question ?? '',\n      // Pass the original request body to the next nodes in the workflow.\n      body: $json.body ?? $json\n      \n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -496,
+        1008
+      ],
+      "id": "14283294-c16e-4527-be0e-b7c48e29efc6",
+      "name": "Size&Header_Validate"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ae2398f0-6f47-4c2d-9bb2-85ff0b5124c8",
+              "leftValue": "={{ $json.validation.isValid }}",
+              "rightValue": "={{false}}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -240,
+        992
+      ],
+      "id": "587c5aaa-6528-4d4c-bf01-dae1d5c96390",
+      "name": "Size&Header_Result"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ae2398f0-6f47-4c2d-9bb2-85ff0b5124c8",
+              "leftValue": "={{$json.error}}",
+              "rightValue": "={{undefined}}",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -160,
+        528
+      ],
+      "id": "b2f7b274-1da1-4789-964f-160780f08406",
+      "name": "Header_Result"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"question\": \"{{ $('AgentKpi_Hook').item.json.body.question ?? $('Size&Header_Validate').item.json.raw_question }}\",\n  \"window\": {\n    \"start\": \"{{ $('AiOutput_Normalizer').item.json.timeframe.start }}\",\n    \"end\": \"{{ $('AiOutput_Normalizer').item.json.timeframe.end }}\"\n  },\n  \"cac\": {\n    \"current\": \"{{ $json.cac_current }}\",\n    \"previous\": \"{{ $json.cac_previous }}\",\n    \"delta_pct\": \"{{ $json.cac_delta_pct }}\"\n  },\n  \"roas\": {\n    \"current\": \"{{ $json.roas_current }}\",\n    \"previous\": \"{{ $json.roas_previous }}\",\n    \"delta_pct\": \"{{ $json.roas_delta_pct }}\"\n  }\n}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "=application/json; charset=utf-8"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        992,
+        944
+      ],
+      "id": "b63a2356-756d-4e1b-8666-189893e4c1d8",
+      "name": "Agent_Kpi_Sucess"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "8b48d408-c213-4cd7-8641-7512140eeb2f",
+              "name": "todayISO",
+              "value": "={{ $json.body?.tz ?? $json.headers?.['x-timezone'] ?? 'UTC' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        352,
+        816
+      ],
+      "id": "5b15fb16-ad44-432b-b079-facd312f9b26",
+      "name": "Drift_Treatment"
+    },
+    {
+      "parameters": {
+        "resource": "object",
+        "operation": "create",
+        "bucketName": "n8n-datatest",
+        "objectName": "={{$node[\"Hash_Md5\"].json.objectName}}",
+        "createData": {
+          "contentType": "text/csv"
+        },
+        "createQuery": {
+          "ifGenerationMatch": 0
+        },
+        "encryptionHeaders": {},
+        "requestOptions": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.googleCloudStorage",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -16
+      ],
+      "id": "6a7757cb-6951-4222-bfe7-0f75d156220a",
+      "name": "GCS_BronzeLayer",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleCloudStorageOAuth2Api": {
+          "id": "5QF6F9C8npq4QKPO",
+          "name": "Google Cloud Storage OAuth"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "projectId": {
+          "__rl": true,
+          "value": "n8ndatatestproject",
+          "mode": "list",
+          "cachedResultName": "n8nDataTestProject",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=n8ndatatestproject"
+        },
+        "sqlQuery": "SELECT * FROM n8ndatatestproject.n8ndatatestproject.mkt_lib.fn_kpi_window(@startDate, @endDate);",
+        "options": {
+          "useLegacySql": false,
+          "queryParameters": {
+            "namedParameters": [
+              {
+                "name": "endDate",
+                "value": "={{$json.timeframe.end}}"
+              },
+              {
+                "name": "startDate",
+                "value": "={{$json.timeframe.start}}"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        800,
+        944
+      ],
+      "id": "650519db-d8d3-431b-8755-d25c98defd97",
+      "name": "Agent_Query_Fn",
+      "credentials": {
+        "googleApi": {
+          "id": "drpXj5yLYKUZxPe8",
+          "name": "Google BigQuery account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "metrics",
+        "authentication": "basicAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -624,
+        544
+      ],
+      "id": "050b93d9-c376-4016-b5d2-13ca39845a70",
+      "name": "KpiAPI_Hook",
+      "webhookId": "4d0e5dcb-21d5-477e-b46f-b4556c2f2d37",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "HqmylvAvi2qpyWGp",
+          "name": "choma.dev"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "=={{ $json.httpCode || 400 }}",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        112,
+        432
+      ],
+      "id": "dd6947d3-e894-4d20-a9d0-fdd807888fae",
+      "name": "KpiAPI_Error"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "projectId": {
+          "__rl": true,
+          "value": "n8ndatatestproject",
+          "mode": "list",
+          "cachedResultName": "n8nDataTestProject",
+          "cachedResultUrl": "https://console.cloud.google.com/bigquery?project=n8ndatatestproject"
+        },
+        "sqlQuery": "SELECT * FROM n8ndatatestproject.n8ndatatestproject.mkt_lib.fn_kpi_window(@startDate, @endDate);",
+        "options": {
+          "queryParameters": {
+            "namedParameters": [
+              {
+                "name": "endDate",
+                "value": "={{$node[\"Header_Validate\"].json.end}}"
+              },
+              {
+                "name": "startDate",
+                "value": "={{$node[\"Header_Validate\"].json.start}}"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleBigQuery",
+      "typeVersion": 2.1,
+      "position": [
+        112,
+        624
+      ],
+      "id": "c815d170-a7b4-4c1e-a34f-f2cc47ca9055",
+      "name": "KpiAPI_Query_Fn",
+      "credentials": {
+        "googleApi": {
+          "id": "drpXj5yLYKUZxPe8",
+          "name": "Google BigQuery account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"window\": { \"start\": \"{{$node['Header_Validate'].json.start}}\", \"end\": \"{{$node['Header_Validate'].json.end}}\" },\n  \"CAC\":  { \"current\": \"{{$json.cac_current}}\", \"previous\": \"{{$json.cac_previous}}\", \"delta_pct\": \"{{$json.cac_delta_pct}}\" },\n  \"ROAS\": { \"current\": \"{{$json.roas_current}}\", \"previous\": \"{{$json.roas_previous}}\", \"delta_pct\": \"{{$json.roas_delta_pct}}\" }\n}\n",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "CORS",
+                "value": "=Access-Control-Allow-Origin: *"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        320,
+        624
+      ],
+      "id": "3f3ec664-58e5-4725-87f3-2875981c3335",
+      "name": "KpiAPI_Sucess"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "askAi",
+        "authentication": "basicAuth",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -752,
+        1024
+      ],
+      "id": "0fc41142-a12c-4245-a01b-6447325501de",
+      "name": "AgentKpi_Hook",
+      "webhookId": "eb05559b-4bfe-479e-95d8-07dd35d055d6",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "HqmylvAvi2qpyWGp",
+          "name": "choma.dev"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"error\": \"invalid_request\",\n  \"reason\": \"{{$json.validation.reason}}\",\n  \"details\": {\n    \"required_content_type\": \"application/json\",\n    \"size_bytes\": \"{{$json.validation.payloadSizeBytes}}\",\n    \"limit_bytes\": \"{{$json.validation.limitBytes}}\"\n  }\n}\n",
+        "options": {
+          "responseCode": "={{$json.validation.reason === 'unsupported_media_type' ? 415 : 413}}"
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -208,
+        1248
+      ],
+      "id": "cb5521fe-9431-4696-a3ce-f988d62a5604",
+      "name": "AgentKpi_Error"
+    },
+    {
+      "parameters": {
+        "jsCode": "// --- helpers ---\nfunction iso(d){ return new Date(d).toISOString().slice(0,10); }\nfunction addDays(d,n){ const x = new Date(d); x.setDate(x.getDate()+n); return x; }\nfunction fromISODateLocal(s){ const [y,m,d] = (s||'').split('-').map(Number); return new Date(y, (m||1)-1, d||1); }\n\nconst raw = $json.output ?? $json;\n\nconst intent = 'kpi_compare';\n\nconst tfIn  = raw.timeframe || {};\nlet strategy = tfIn.strategy ?? raw.strategy ?? 'last_n_days';\nlet n        = tfIn.n        ?? raw.n        ?? 30;\nlet start    = tfIn.start    ?? raw.start    ?? null;\nlet end      = tfIn.end      ?? raw.end      ?? null;\n\n// If nothing comes from user, uses UTC zone\nconst tzToday = $json.todayISO ? fromISODateLocal($json.todayISO) : new Date();\n\n// Sanity \nif (strategy === 'last_n_days' && (!n || n < 1 || n > 365)) n = 30;\n\n// Date Transform (always on)\nif (strategy === 'last_n_days') {\n  const e = tzToday; const s = addDays(e, -n);\n  start = iso(s); end = iso(e);\n}\nif (strategy === 'this_month') {\n  const y = tzToday.getFullYear(), m = tzToday.getMonth();\n  start = iso(new Date(y, m, 1));\n  end   = iso(tzToday);\n}\nif (strategy === 'last_month') {\n  const y = tzToday.getFullYear(), m = tzToday.getMonth();\n  start = iso(new Date(y, m-1, 1));\n  end   = iso(new Date(y, m, 0));\n}\nif (strategy === 'yesterday') {\n  const e = addDays(tzToday, -1);\n  start = iso(e); end = iso(e);\n}\n\n// Fallback when no date\nif (!start || !end) {\n  const e = tzToday; const s = addDays(e, -30);\n  start = iso(s); end = iso(e);\n}\n\n// Filters: accept null → normalize to object\nconst filters = raw.filters === null ? { platform:null,country:null,account:null,campaign:null,device:null }\n                                     : (raw.filters || {});\n\n// Exit without wrapper & with complete timeframe \nreturn [{\n  json: {\n    intent,\n    metrics: raw.metrics || { cac:true, roas:true },\n    timeframe: { strategy, n, start, end },\n    filters\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        944
+      ],
+      "id": "a4625fa4-5b8d-4b1e-81ba-21b4ebee4bd4",
+      "name": "AiOutput_Normalizer"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -592,
+        -176
+      ],
+      "id": "f0fed8fa-79fa-4643-b306-f54f0146e53c",
+      "name": "N8n_Manual_Ingestion"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingestion",
+        "authentication": "basicAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -640,
+        208
+      ],
+      "id": "8a73f4e5-7603-4fbe-bcc5-11f239033efc",
+      "name": "Post_Ingestion_Hook",
+      "webhookId": "4d0e5dcb-21d5-477e-b46f-b4556c2f2d37",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "HqmylvAvi2qpyWGp",
+          "name": "choma.dev"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6fdc42c4-f581-419b-8233-69c861e3758c",
+              "leftValue": "={{$node[\"GCS_BronzeLayer\"].json[\"statusCode\"]}}",
+              "rightValue": "412",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "4e2566b9-0d1c-4da5-93cb-11d3bebe04b6",
+              "leftValue": "={{$node[\"GCS_BronzeLayer\"].json[\"statusCode\"]}}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "notExists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {
+          "ignoreCase": false
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        176,
+        96
+      ],
+      "id": "9b02f21a-371b-422e-9fac-123fe90bb27b",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "errorMessage": "An Error ocurred in the GLC process."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        384,
+        160
+      ],
+      "id": "5ea9425b-34fc-4f8b-958f-b6f7c35b5276",
+      "name": "Stop and Error"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "ELT": {
+      "main": [
+        [
+          {
+            "node": "Ingestion_Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "AiOutput_Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dataset": {
+      "main": [
+        [
+          {
+            "node": "Hash_Md5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash_Md5": {
+      "main": [
+        [
+          {
+            "node": "GCS_BronzeLayer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Header_Validate": {
+      "main": [
+        [
+          {
+            "node": "Header_Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Size&Header_Validate": {
+      "main": [
+        [
+          {
+            "node": "Size&Header_Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Size&Header_Result": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AgentKpi_Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Header_Result": {
+      "main": [
+        [
+          {
+            "node": "KpiAPI_Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "KpiAPI_Query_Fn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drift_Treatment": {
+      "main": [
+        [
+          {
+            "node": "AiOutput_Normalizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GCS_BronzeLayer": {
+      "main": [
+        [
+          {
+            "node": "ELT",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent_Query_Fn": {
+      "main": [
+        [
+          {
+            "node": "Agent_Kpi_Sucess",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KpiAPI_Hook": {
+      "main": [
+        [
+          {
+            "node": "Header_Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KpiAPI_Query_Fn": {
+      "main": [
+        [
+          {
+            "node": "KpiAPI_Sucess",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AgentKpi_Hook": {
+      "main": [
+        [
+          {
+            "node": "Size&Header_Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AiOutput_Normalizer": {
+      "main": [
+        [
+          {
+            "node": "Agent_Query_Fn",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "N8n_Manual_Ingestion": {
+      "main": [
+        [
+          {
+            "node": "Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post_Ingestion_Hook": {
+      "main": [
+        [
+          {
+            "node": "Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "ELT",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "550f76d3-0995-41cc-a9c5-1fc3bd88da55",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a3d390bf24f9ab8ff653124441e006a4760b1e2e0d6e85244fe9d7b41f439d41"
+  },
+  "id": "FJApbdbLRHpHV21l",
+  "tags": []
+}
