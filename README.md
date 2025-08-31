@@ -11,7 +11,7 @@ This guide explains how to set up and run the **n8n workflow** (`dataEngTest.jso
   - BigQuery enabled  
   - Google Cloud Storage (GCS) bucket created (default: `n8n-datatest`)
 - **n8n instance** (Cloud)
-- **OpenAI account** (for the AI agent - I sent by email an already payed key to be used)
+- **OpenAI account** (Necessary for the AI agent)
 
 ---
 
